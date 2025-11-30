@@ -47,6 +47,7 @@
     <div class="controls">
         <button id="initBtn" class="btn-primary">1. 初始化</button>
         <div style="width:1px;height:20px;background:#444"></div>
+        <div id="messageArea" style="font-size:12px;color:#bbb;margin-left:10px;min-width:240px"></div>
         
         <button id="autoMoveBtn" class="btn-auto" disabled>🎬 自动运镜: 关</button>
         
@@ -93,15 +94,33 @@
         // 1. 初始化
         document.getElementById('initBtn').onclick = async () => {
             try {
+                // Debug: show we're requesting permissions
+                const messageArea = document.getElementById('messageArea');
+                messageArea.innerText = '正在请求麦克风许可…';
+                console.log('Requesting microphone permission');
+
+                // 首先请求麦克风权限（单独请求有时会帮助浏览器弹出选择麦克风的对话）
+                let micStream = null;
+                try {
+                    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    messageArea.innerText = '麦克风许可已允许';
+                    console.log('Microphone permission granted');
+                } catch (micErr) {
+                    console.warn('请求麦克风失败', micErr);
+                    messageArea.innerText = '麦克风许可被拒绝或异常: ' + micErr.name;
+                }
+
                 // 关键：cursor: 'always' 确保录制鼠标
+                messageArea.innerText = '正在请求屏幕共享许可…（请在浏览器弹窗中选择屏幕并勾选“共享音频”）';
+                console.log('Requesting display permission');
                 const sStream = await navigator.mediaDevices.getDisplayMedia({ 
                     video: {width: 1920, height: 1080, frameRate: 60, cursor: 'always'}, audio: true 
                 });
                 document.getElementById('vScreen').srcObject = sStream;
-
-                const cStream = await navigator.mediaDevices.getUserMedia({ 
-                    video: {width: {ideal:1920}, height: {ideal:1080}}, audio: true 
-                });
+                // 如果没有先拿到麦克风（micStream 为空），在此处再获取一次麦克风权限
+                let cStream = null;
+                if (micStream) cStream = micStream;
+                else cStream = await navigator.mediaDevices.getUserMedia({ video: {width: {ideal:1920}, height: {ideal:1080}}, audio: true });
                 document.getElementById('vCam').srcObject = cStream;
 
                 audioCtx = new (window.AudioContext||window.webkitAudioContext)();
@@ -120,7 +139,16 @@
                 document.getElementById('autoMoveBtn').disabled = false;
                 
                 loop();
-            } catch(e) { alert("初始化错误: " + e.message); }
+            } catch(e) { 
+                console.error('初始化失败', e);
+                const messageArea = document.getElementById('messageArea');
+                messageArea.innerText = '初始化错误: ' + e.name + (e.message?(' — '+e.message):'');
+                // Provide macOS permission hint when Screen Recording is blocked or NotAllowedError
+                if (e.name === 'NotAllowedError' || e.name === 'NotFoundError') {
+                    messageArea.innerText += '\n提示: 若你在 macOS，请检查 "系统偏好设置 → 隐私与安全性 → 屏幕录像/麦克风" 是否允许浏览器访问。';
+                }
+                alert("初始化错误: " + e.message);
+            }
         };
 
         // 2. 渲染循环

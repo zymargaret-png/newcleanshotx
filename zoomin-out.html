@@ -46,6 +46,7 @@
 
     <div class="controls">
         <button id="initBtn" class="btn-primary">1. 初始化</button>
+        <button id="requestMicBtn" style="margin-left:8px" title="单独请求麦克风权限">🔊 请求麦克风权限</button>
         <div style="width:1px;height:20px;background:#444"></div>
         <div id="messageArea" style="font-size:12px;color:#bbb;margin-left:10px;min-width:240px"></div>
         
@@ -139,7 +140,7 @@
                 document.getElementById('autoMoveBtn').disabled = false;
                 
                 loop();
-            } catch(e) { 
+                } catch(e) { 
                 console.error('初始化失败', e);
                 const messageArea = document.getElementById('messageArea');
                 messageArea.innerText = '初始化错误: ' + e.name + (e.message?(' — '+e.message):'');
@@ -150,6 +151,48 @@
                 alert("初始化错误: " + e.message);
             }
         };
+
+        // 单独请求麦克风权限 (显式触发) — 有时能确保浏览器弹出麦克风权限选择
+        const requestMicBtn = document.getElementById('requestMicBtn');
+        requestMicBtn.onclick = async () => {
+            const messageArea = document.getElementById('messageArea');
+            try {
+                messageArea.innerText = '正在请求麦克风权限 — 请在浏览器弹窗中允许访问';
+                console.log('Requesting microphone via requestMicBtn');
+                await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                messageArea.innerText = '麦克风权限已允许';
+            } catch (e) {
+                messageArea.innerText = '麦克风请求失败: ' + (e.name || e.message);
+                console.warn('Microphone request failed', e);
+                if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
+                    messageArea.innerText += '\n请检查浏览器或系统权限设置（Chrome地址栏右侧的麦克风图标，或 macOS 系统偏好设置/隐私）';
+                }
+            }
+            // 更新权限状态显示
+            updatePermissionStatus();
+        };
+
+        // 权限 API 检查和状态显示
+        async function updatePermissionStatus() {
+            const messageArea = document.getElementById('messageArea');
+            if (navigator.permissions && navigator.permissions.query) {
+                try {
+                    const status = await navigator.permissions.query({ name: 'microphone' });
+                    messageArea.innerText = (messageArea.innerText?messageArea.innerText+'\n':'') + '麦克风权限状态: ' + status.state;
+                    status.onchange = () => { messageArea.innerText = '麦克风权限状态: ' + status.state; };
+                } catch(e) {
+                    console.warn('Permissions API query failed', e);
+                }
+            } else {
+                messageArea.innerText = (messageArea.innerText?messageArea.innerText+'\n':'') + '浏览器不支持 Permissions API，无法查询麦克风状态';
+            }
+            // 检查是否是安全上下文
+            if (!window.isSecureContext) {
+                messageArea.innerText += '\n提示: 页面不是安全上下文 (https 或 localhost)，浏览器将不会显示权限弹窗。请通过 `npm run dev` 在 localhost 或部署到 HTTPS 下访问。';
+            }
+        }
+        // 在加载时更新一次
+        updatePermissionStatus();
 
         // 2. 渲染循环
         function loop() {

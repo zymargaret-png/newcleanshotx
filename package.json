@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "live-server --entry-file=index.html --port=3000",
     "predeploy": "echo 'Preparing to deploy'",
-    "deploy": "gh-pages -d .",
+    "deploy": "gh-pages -d docs",
+    "deploy:docs": "git subtree push --prefix docs origin gh-pages || echo 'no-remote'",
     "start": "node server.js"
   },
   "devDependencies": {

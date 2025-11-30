@@ -266,10 +266,23 @@
             }, 1000);
         };
         function startRec() {
-            chunks = []; const stream = canvas.captureStream(60); const tracks = [];
-            if(document.getElementById('vScreen').srcObject) tracks.push(...document.getElementById('vScreen').srcObject.getAudioTracks());
-            if(document.getElementById('vCam').srcObject) tracks.push(...document.getElementById('vCam').srcObject.getAudioTracks());
-            if(tracks.length) stream.addTrack(tracks[0]);
+            chunks = []; const stream = canvas.captureStream(60);
+            // 如果有音频轨道，混合系统音频和麦克风并作为单个音频轨加入到录制流中
+            const screenStream = document.getElementById('vScreen').srcObject;
+            const camStream = document.getElementById('vCam').srcObject;
+            const hasScreenAudio = screenStream && screenStream.getAudioTracks && screenStream.getAudioTracks().length;
+            const hasCamAudio = camStream && camStream.getAudioTracks && camStream.getAudioTracks().length;
+            if (hasScreenAudio || hasCamAudio) {
+                try {
+                    // reuse existing audioCtx if available (created during init)，确保这是在用户交互中创建
+                    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const dest = audioCtx.createMediaStreamDestination();
+                    if (hasCamAudio) audioCtx.createMediaStreamSource(camStream).connect(dest);
+                    if (hasScreenAudio) audioCtx.createMediaStreamSource(screenStream).connect(dest);
+                    // 将混合后的单音频轨加入到 canvas 的捕获流中
+                    dest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+                } catch (e) { console.warn('音频混合失败，将尝试直接添加单轨：', e); }
+            }
             let mime = 'video/webm;codecs=vp9'; if(MediaRecorder.isTypeSupported('video/mp4')) mime = 'video/mp4';
             recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8000000 });
             recorder.ondataavailable = e => { if(e.data.size) chunks.push(e.data); };

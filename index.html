@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loom Pro V8 (直出MP4版)</title>
+    <style>
+        :root { --bg: #0f1117; --text: #fff; --accent: #625DF5; --danger: #EF476F; --pink: #FF69B4; --green: #00C853; }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; margin: 0; user-select: none; }
+        
+        /* 控制栏 */
+        .controls { background: #1e212d; padding: 12px 20px; border-radius: 50px; margin-bottom: 20px; display: flex; gap: 12px; align-items: center; border: 1px solid #333; flex-wrap: wrap; justify-content: center; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
+        
+        button { padding: 10px 18px; border-radius: 20px; border: none; cursor: pointer; font-weight: 600; background: #333; color: #ccc; transition: 0.2s; font-size: 14px; display: flex; align-items: center; gap: 5px;}
+        button:hover { filter: brightness(1.2); color: #fff; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-record { background: var(--danger); color: #fff; min-width: 110px; justify-content: center; }
+        
+        /* 格式标签 */
+        .format-badge { font-size: 12px; padding: 4px 8px; border-radius: 4px; background: #333; color: #888; border: 1px solid #444; }
+        .format-mp4 { color: var(--green); border-color: var(--green); background: rgba(0, 200, 83, 0.1); }
+        
+        /* 滤镜按钮 */
+        .btn-filter { border: 1px solid #444; min-width: 90px; justify-content: center; }
+        .btn-filter[data-mode="1"] { background: rgba(98, 93, 245, 0.2); color: #8e8aff; border-color: #625DF5; }
+        .btn-filter[data-mode="2"] { background: rgba(255, 105, 180, 0.2); color: #ff8ac4; border-color: #FF69B4; }
+
+        .btn-icon { padding: 0; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+        .btn-icon.active { background: var(--accent); color: #fff; border: none; }
+
+        /* 预览区 */
+        .canvas-box { width: 90%; max-width: 1000px; aspect-ratio: 16/9; background: #000; border-radius: 12px; overflow: hidden; border: 2px solid #333; position: relative; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+        canvas { width: 100%; height: 100%; display: block; }
+        
+        .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; font-size: 100px; font-weight: 800; color: white; text-shadow: 0 10px 30px rgba(0,0,0,0.8); }
+        .status-bar { margin-top: 15px; color: #666; font-size: 13px; display:flex; align-items:center; gap: 10px;}
+
+        .hidden-stream { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; z-index: -1; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <button id="initBtn" class="btn-primary">1. 初始化</button>
+        <div id="formatTag" class="format-badge">检测格式中...</div>
+        <span style="width:1px;height:20px;background:#444"></span>
+        
+        <button class="btn-icon" onclick="setSize(0.15)">S</button>
+        <button class="btn-icon active" onclick="setSize(0.22)">M</button>
+        <button class="btn-icon" onclick="setSize(0.35)">L</button>
+        
+        <span style="width:1px;height:20px;background:#444"></span>
+        
+        <button id="filterBtn" class="btn-filter" disabled data-mode="0">🚫 原图</button>
+        <button id="pipBtn" disabled>📺 悬浮窗</button>
+        
+        <span style="width:1px;height:20px;background:#444"></span>
+        
+        <button id="recBtn" class="btn-record" disabled>🔴 录制</button>
+        <button id="stopBtn" disabled>⏹ 完成</button>
+    </div>
+
+    <div class="canvas-box">
+        <canvas id="mainCanvas" width="1920" height="1080"></canvas>
+        <div id="overlay" class="overlay"></div>
+    </div>
+    
+    <div class="status-bar">
+        <span id="statusText">点击【初始化】启动系统...</span>
+    </div>
+
+    <video id="vScreen" class="hidden-stream" autoplay playsinline muted></video>
+    <video id="vCam" class="hidden-stream" autoplay playsinline muted></video>
+    <canvas id="pipCanvas" width="320" height="320" class="hidden-stream"></canvas>
+    <video id="vPip" class="hidden-stream" autoplay playsinline muted></video>
+
+    <script>
+        const $ = id => document.getElementById(id);
+        const mainCtx = $('mainCanvas').getContext('2d');
+        const pipCtx = $('pipCanvas').getContext('2d');
+        
+        let state = { 
+            ready: false, recording: false, 
+            filterMode: 0, // 0:原图, 1:质感, 2:柔光
+            x: 50, y: 750, size: 0.22, targetSize: 0.22, 
+            dragging: false, audioLevel: 0,
+            mimeType: 'video/webm', fileExt: 'webm' // 默认格式
+        };
+        let recorder, chunks = [], audioCtx, analyser, dataArray;
+
+        // --- 智能格式检测 ---
+        function checkSupport() {
+            // 优先尝试 MP4 (H.264)
+            const mp4Types = [
+                'video/mp4;codecs=avc1', 
+                'video/mp4'
+            ];
+            
+            for (let t of mp4Types) {
+                if (MediaRecorder.isTypeSupported(t)) {
+                    state.mimeType = t;
+                    state.fileExt = 'mp4';
+                    const tag = $('formatTag');
+                    tag.innerText = "MP4 格式 (H.264)";
+                    tag.classList.add('format-mp4');
+                    return;
+                }
+            }
+
+            // 降级回退
+            $('formatTag').innerText = "WebM 格式 (Fallback)";
+            state.mimeType = 'video/webm;codecs=vp9'; 
+            if(!MediaRecorder.isTypeSupported(state.mimeType)) {
+                 state.mimeType = 'video/webm'; // 最基础的
+            }
+        }
+        checkSupport(); // 页面加载即运行检测
+
+        // 1. 初始化
+        $('initBtn').onclick = async () => {
+            try {
+                const sStream = await navigator.mediaDevices.getDisplayMedia({ video: {width:1920, height:1080}, audio: true });
+                $('vScreen').srcObject = sStream;
+                
+                // 请求高清摄像头
+                const cStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: {ideal: 1920}, height: {ideal: 1080} }, 
+                    audio: true 
+                });
+                $('vCam').srcObject = cStream;
+
+                audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+                const source = audioCtx.createMediaStreamSource(cStream);
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 32;
+                source.connect(analyser);
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+                $('initBtn').disabled = true;
+                $('initBtn').innerText = "✅ 就绪";
+                $('recBtn').disabled = false;
+                $('pipBtn').disabled = false;
+                $('filterBtn').disabled = false;
+                $('statusText').innerText = `系统就绪 | 录制输出格式: .${state.fileExt.toUpperCase()}`;
+                
+                state.ready = true;
+                state.x = 1920 - (1080*0.22) - 50;
+                state.y = 1080 - (1080*0.22) - 50;
+                
+                loop(); 
+            } catch(e) {
+                alert("初始化失败: " + e.message);
+            }
+        };
+
+        // 2. 录制逻辑 (核心修改)
+        $('recBtn').onclick = () => {
+            let c = 3; $('overlay').innerText = c;
+            const t = setInterval(() => {
+                c--;
+                if(c>0) $('overlay').innerText = c;
+                else { clearInterval(t); $('overlay').innerText = ""; startRec(); }
+            }, 1000);
+        };
+
+        function startRec() {
+            chunks = [];
+            const stream = $('mainCanvas').captureStream(30);
+            const tracks = [];
+            if($('vScreen').srcObject) tracks.push(...$('vScreen').srcObject.getAudioTracks());
+            if($('vCam').srcObject) tracks.push(...$('vCam').srcObject.getAudioTracks());
+            if(tracks.length) stream.addTrack(tracks[0]);
+
+            // 使用检测到的 MP4 或 WebM 格式
+            try {
+                recorder = new MediaRecorder(stream, { 
+                    mimeType: state.mimeType,
+                    videoBitsPerSecond: 5000000 // 尝试提高码率以保证清晰度 (5Mbps)
+                });
+            } catch (e) {
+                console.warn("首选格式失败，尝试默认格式", e);
+                recorder = new MediaRecorder(stream); // 浏览器自适应
+                state.fileExt = 'webm'; // 保底
+            }
+
+            recorder.ondataavailable = e => { if(e.data.size) chunks.push(e.data); };
+            recorder.onstop = () => {
+                // 导出文件
+                const blob = new Blob(chunks, {type: state.mimeType});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; 
+                // 使用正确后缀名
+                a.download = `Record_${Date.now()}.${state.fileExt}`; 
+                a.click();
+                $('statusText').innerText = `✅ 已保存为 .${state.fileExt} 文件`;
+            };
+            
+            recorder.start();
+            state.recording = true;
+            updateUI(true);
+        }
+
+        // --- 以下是渲染、美颜、交互逻辑 (保持 V7 优秀体验) ---
+        $('filterBtn').onclick = () => {
+            state.filterMode = (state.filterMode + 1) % 3;
+            const btn = $('filterBtn');
+            btn.setAttribute('data-mode', state.filterMode);
+            
+            if(state.filterMode === 0) { btn.innerText = "🚫 原图"; $('statusText').innerText = "模式：原图 (最高清晰度)"; } 
+            else if(state.filterMode === 1) { btn.innerText = "✨ 质感"; $('statusText').innerText = "模式：质感 (推荐)"; } 
+            else { btn.innerText = "🍑 柔光"; $('statusText').innerText = "模式：柔光 (适合暗光)"; }
+        };
+
+        function loop() {
+            if(!state.ready) return requestAnimationFrame(loop);
+            if(analyser) { analyser.getByteFrequencyData(dataArray); state.audioLevel = dataArray.reduce((a,b)=>a+b,0)/dataArray.length; }
+
+            mainCtx.clearRect(0,0,1920,1080);
+            pipCtx.fillStyle = "#000"; pipCtx.fillRect(0,0,320,320);
+
+            if($('vScreen').readyState === 4) mainCtx.drawImage($('vScreen'), 0, 0, 1920, 1080);
+            else { mainCtx.fillStyle = "#111"; mainCtx.fillRect(0,0,1920,1080); }
+
+            state.size += (state.targetSize - state.size) * 0.1;
+            const sizePx = 1080 * state.size;
+            drawCam(mainCtx, state.x, state.y, sizePx, true);
+            drawCam(pipCtx, 10, 10, 300, false);
+            requestAnimationFrame(loop);
+        }
+
+        function drawCam(ctx, x, y, size, shadow) {
+            if($('vCam').readyState !== 4) return;
+            const r = size/2, cx = x + r, cy = y + r;
+            ctx.save();
+            const vol = state.audioLevel / 40;
+            if(vol > 0.1) {
+                ctx.beginPath(); ctx.arc(cx, cy, r + vol*15, 0, Math.PI*2);
+                ctx.fillStyle = `rgba(98, 93, 245, ${0.3 + vol*0.2})`; ctx.fill();
+            }
+            ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+            if(shadow) { ctx.shadowColor = "rgba(0,0,0,0.5)"; ctx.shadowBlur = 20; ctx.shadowOffsetY = 5; }
+            ctx.clip();
+
+            const vw = $('vCam').videoWidth, vh = $('vCam').videoHeight, min = Math.min(vw, vh);
+            
+            if (state.filterMode === 1) ctx.filter = 'contrast(1.1) saturate(1.1)';
+            else if (state.filterMode === 2) ctx.filter = 'brightness(1.05) blur(0.3px) saturate(1.05)';
+            else ctx.filter = 'none';
+            
+            ctx.drawImage($('vCam'), (vw-min)/2, (vh-min)/2, min, min, x, y, size, size);
+            
+            ctx.filter = 'none';
+            ctx.strokeStyle = "#fff"; ctx.lineWidth = size * 0.03; ctx.stroke();
+            ctx.restore();
+        }
+
+        $('pipBtn').onclick = async () => {
+            if(document.pictureInPictureElement) document.exitPictureInPicture();
+            else {
+                if(!$('vPip').srcObject) { $('vPip').srcObject = $('pipCanvas').captureStream(30); await $('vPip').play(); }
+                try { await $('vPip').requestPictureInPicture(); } catch(e) {}
+            }
+        };
+        $('stopBtn').onclick = () => { if(state.recording) { recorder.stop(); state.recording = false; updateUI(false); } };
+        function setSize(s) { state.targetSize = s; document.querySelectorAll('.btn-icon').forEach(b => b.classList.remove('active')); event.target.classList.add('active'); }
+        function updateUI(rec) { $('recBtn').disabled = rec; $('recBtn').innerText = rec ? "录制中..." : "🔴 录制"; $('stopBtn').disabled = !rec; if(rec) $('stopBtn').classList.add('btn-primary'); else $('stopBtn').classList.remove('btn-primary'); }
+        
+        $('mainCanvas').onmousedown = e => {
+            const r = $('mainCanvas').getBoundingClientRect(), s = 1920 / r.width;
+            const cx = state.x + (1080*state.size)/2, cy = state.y + (1080*state.size)/2;
+            if(Math.hypot((e.clientX-r.left)*s - cx, (e.clientY-r.top)*s - cy) < (1080*state.size)/2) {
+                state.dragging = true; state.ox = (e.clientX-r.left)*s - state.x; state.oy = (e.clientY-r.top)*s - state.y;
+            }
+        };
+        window.onmousemove = e => {
+            if(!state.dragging) return;
+            const r = $('mainCanvas').getBoundingClientRect(), s = 1920 / r.width;
+            state.x = (e.clientX-r.left)*s - state.ox; state.y = (e.clientY-r.top)*s - state.oy;
+        };
+        window.onmouseup = () => state.dragging = false;
+
+    </script>
+</body>
+</html>

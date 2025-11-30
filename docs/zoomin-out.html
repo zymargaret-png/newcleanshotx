@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loom Pro V12 (自动电影感版)</title>
+    <style>
+        :root { --bg: #0f1117; --text: #fff; --accent: #625DF5; --danger: #EF476F; --pink: #FF69B4; }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; height: 100vh; margin: 0; overflow: hidden; user-select: none; }
+        
+        .controls { 
+            background: rgba(30, 33, 45, 0.95); backdrop-filter: blur(10px);
+            padding: 12px 20px; border-radius: 50px; margin-bottom: 15px; 
+            display: flex; gap: 12px; align-items: center; border: 1px solid rgba(255,255,255,0.1); z-index: 100;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.4); flex-wrap: wrap; justify-content: center;
+        }
+        button { padding: 8px 16px; border-radius: 20px; border: none; cursor: pointer; font-weight: 600; background: #333; color: #ccc; transition: 0.2s; font-size: 13px; white-space: nowrap;}
+        button:hover { background: #444; color: #fff; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-record { background: var(--danger); color: #fff; box-shadow: 0 0 15px rgba(239, 71, 111, 0.3); }
+        
+        /* 自动运镜激活状态 */
+        .btn-auto.active { background: linear-gradient(45deg, #FF512F, #DD2476); color: white; box-shadow: 0 0 15px rgba(221, 36, 118, 0.4); border: none;}
+
+        .viewport {
+            position: relative; width: 90%; max-width: 1200px; aspect-ratio: 16/9;
+            border-radius: 16px; overflow: hidden;
+            box-shadow: 0 20px 80px rgba(0,0,0,0.6); border: 1px solid #333;
+            cursor: default;
+        }
+        canvas { width: 100%; height: 100%; display: block; }
+        
+        .overlay-tip {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.7); padding: 8px 16px; border-radius: 20px;
+            font-size: 12px; color: #ddd; pointer-events: none; border: 1px solid rgba(255,255,255,0.1);
+        }
+        .countdown { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 120px; font-weight: 900; pointer-events: none; text-shadow: 0 10px 30px rgba(0,0,0,0.6); }
+        .hidden { display: none; }
+        .hidden-stream { position: fixed; top:0; left:0; width:1px; height:1px; opacity:0; pointer-events:none; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <button id="initBtn" class="btn-primary">1. 初始化</button>
+        <div style="width:1px;height:20px;background:#444"></div>
+        
+        <button id="autoMoveBtn" class="btn-auto" disabled>🎬 自动运镜: 关</button>
+        
+        <button id="filterBtn" disabled>✨ 质感</button>
+        <button id="pipBtn" disabled>📺 悬浮窗</button>
+        
+        <div style="width:1px;height:20px;background:#444"></div>
+        <button id="recBtn" class="btn-record" disabled>🔴 录制MP4</button>
+        <button id="stopBtn" disabled>⏹ 停止</button>
+    </div>
+
+    <div class="viewport" id="viewport">
+        <canvas id="mainCanvas" width="1920" height="1080"></canvas>
+        <div class="overlay-tip" id="statusTip">💡 开启【自动运镜】后，无需操作即可获得高级感</div>
+        <div id="countdown" class="countdown hidden">3</div>
+    </div>
+
+    <video id="vScreen" class="hidden-stream" autoplay playsinline muted></video>
+    <video id="vCam" class="hidden-stream" autoplay playsinline muted></video>
+    <canvas id="pipCanvas" width="320" height="320" class="hidden-stream"></canvas>
+    <video id="vPip" class="hidden-stream" autoplay playsinline muted></video>
+
+    <script>
+        const canvas = document.getElementById('mainCanvas');
+        const ctx = canvas.getContext('2d');
+        const pipCanvas = document.getElementById('pipCanvas');
+        const pipCtx = pipCanvas.getContext('2d');
+        
+        const state = {
+            ready: false, recording: false, bgMode: true, filterMode: 1,
+            autoMove: false, // 自动运镜开关
+            
+            // 摄像机状态
+            camera: { zoom: 1, x: 0, y: 0 },
+            
+            // 自动运镜的目标点 (用于缓动)
+            autoTarget: { zoom: 1.05, x: 20, y: 20, timer: 0 },
+
+            camUI: { x: 1650, y: 850, size: 220, audioLevel: 0 }
+        };
+        
+        let recorder, chunks = [], audioCtx, analyser, dataArray;
+
+        // 1. 初始化
+        document.getElementById('initBtn').onclick = async () => {
+            try {
+                // 关键：cursor: 'always' 确保录制鼠标
+                const sStream = await navigator.mediaDevices.getDisplayMedia({ 
+                    video: {width: 1920, height: 1080, frameRate: 60, cursor: 'always'}, audio: true 
+                });
+                document.getElementById('vScreen').srcObject = sStream;
+
+                const cStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: {width: {ideal:1920}, height: {ideal:1080}}, audio: true 
+                });
+                document.getElementById('vCam').srcObject = cStream;
+
+                audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+                const source = audioCtx.createMediaStreamSource(cStream);
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 32;
+                source.connect(analyser);
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+                state.ready = true;
+                document.getElementById('initBtn').disabled = true;
+                document.getElementById('initBtn').innerText = "✅ 就绪";
+                document.getElementById('recBtn').disabled = false;
+                document.getElementById('filterBtn').disabled = false;
+                document.getElementById('pipBtn').disabled = false;
+                document.getElementById('autoMoveBtn').disabled = false;
+                
+                loop();
+            } catch(e) { alert("初始化错误: " + e.message); }
+        };
+
+        // 2. 渲染循环
+        function loop() {
+            if(!state.ready) return requestAnimationFrame(loop);
+
+            if(analyser) {
+                analyser.getByteFrequencyData(dataArray);
+                state.camUI.audioLevel = dataArray.reduce((a,b)=>a+b,0)/dataArray.length;
+            }
+
+            // --- 🎬 核心：自动运镜逻辑 (Auto-Drift) ---
+            if (state.autoMove) {
+                state.autoTarget.timer++;
+                // 每 300 帧 (约5秒) 切换一次微小的目标，制造“呼吸感”
+                if (state.autoTarget.timer > 300) {
+                    state.autoTarget.timer = 0;
+                    // 随机缩放 1.02 ~ 1.10 (非常微妙)
+                    state.autoTarget.zoom = 1.02 + Math.random() * 0.08;
+                    // 随机偏移 -30px ~ 30px
+                    state.autoTarget.x = (Math.random() - 0.5) * 60;
+                    state.autoTarget.y = (Math.random() - 0.5) * 60;
+                }
+                
+                // 极慢速缓动 (0.005)，模拟电影平滑推轨
+                state.camera.zoom += (state.autoTarget.zoom - state.camera.zoom) * 0.005;
+                state.camera.x += (state.autoTarget.x - state.camera.x) * 0.005;
+                state.camera.y += (state.autoTarget.y - state.camera.y) * 0.005;
+            } else {
+                // 如果关闭，缓慢复位
+                state.camera.zoom += (1 - state.camera.zoom) * 0.05;
+                state.camera.x += (0 - state.camera.x) * 0.05;
+                state.camera.y += (0 - state.camera.y) * 0.05;
+            }
+
+            // 背景
+            const grad = ctx.createLinearGradient(0, 0, 1920, 1080);
+            grad.addColorStop(0, "#2b32b2"); grad.addColorStop(1, "#1488cc");
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 1920, 1080);
+
+            // 屏幕
+            const vScreen = document.getElementById('vScreen');
+            if (vScreen.readyState === 4) {
+                ctx.save();
+                const padding = 80; 
+                const baseW = 1920 - (padding*2);
+                const baseH = 1080 - (padding*2);
+                
+                ctx.translate(1920/2, 1080/2);
+                ctx.scale(state.camera.zoom, state.camera.zoom);
+                ctx.translate(-state.camera.x, -state.camera.y);
+
+                ctx.shadowColor = "rgba(0,0,0,0.4)"; ctx.shadowBlur = 40; ctx.shadowOffsetY = 20;
+                ctx.drawImage(vScreen, -baseW/2, -baseH/2, baseW, baseH);
+                ctx.restore();
+            }
+
+            drawCamera(ctx, state.camUI.x, state.camUI.y, state.camUI.size, true);
+            
+            pipCtx.fillStyle = "#000"; pipCtx.fillRect(0,0,320,320);
+            drawCamera(pipCtx, 160, 160, 280, false);
+
+            requestAnimationFrame(loop);
+        }
+
+        function drawCamera(targetCtx, x, y, size, hasShadow) {
+            const vCam = document.getElementById('vCam');
+            if(vCam.readyState !== 4) return;
+            const r = size/2;
+
+            targetCtx.save();
+            const vol = state.camUI.audioLevel / 40;
+            if(vol > 0.1) {
+                targetCtx.beginPath(); targetCtx.arc(x, y, r + vol*15, 0, Math.PI*2);
+                targetCtx.fillStyle = `rgba(98, 93, 245, ${0.3 + vol*0.2})`; targetCtx.fill();
+            }
+            targetCtx.beginPath(); targetCtx.arc(x, y, r, 0, Math.PI*2);
+            if(hasShadow) { targetCtx.shadowColor = "rgba(0,0,0,0.5)"; targetCtx.shadowBlur = 20; targetCtx.shadowOffsetY = 5; }
+            targetCtx.clip();
+            
+            if (state.filterMode === 1) targetCtx.filter = 'contrast(1.1) saturate(1.1)';
+            else if (state.filterMode === 2) targetCtx.filter = 'brightness(1.05) blur(0.5px) saturate(1.05)';
+            else targetCtx.filter = 'none';
+            
+            const vw = vCam.videoWidth, vh = vCam.videoHeight, min = Math.min(vw, vh);
+            targetCtx.drawImage(vCam, (vw-min)/2, (vh-min)/2, min, min, x-r, y-r, size, size);
+            
+            targetCtx.filter = 'none';
+            targetCtx.strokeStyle = "#fff"; targetCtx.lineWidth = 6; targetCtx.stroke();
+            targetCtx.restore();
+        }
+
+        // --- 交互逻辑 ---
+        const autoBtn = document.getElementById('autoMoveBtn');
+        autoBtn.onclick = () => {
+            state.autoMove = !state.autoMove;
+            if(state.autoMove) {
+                autoBtn.innerText = "🎬 自动运镜: 开";
+                autoBtn.classList.add('active');
+                document.getElementById('statusTip').innerText = "💡 正在自动缓动，请直接操作你的软件即可";
+            } else {
+                autoBtn.innerText = "🎬 自动运镜: 关";
+                autoBtn.classList.remove('active');
+                document.getElementById('statusTip').innerText = "💡 静态模式";
+            }
+        };
+
+        // 触控板手动干预 (可选)
+        const viewport = document.getElementById('viewport');
+        viewport.addEventListener('wheel', (e) => {
+            if(state.autoMove) return; // 开启自动时禁用手动，防止冲突
+            e.preventDefault();
+            let newZoom = state.camera.zoom - (e.deltaY * 0.001);
+            state.camera.zoom = Math.max(1.0, Math.min(newZoom, 2.0));
+        }, { passive: false });
+
+        const filterBtn = document.getElementById('filterBtn');
+        filterBtn.onclick = () => {
+            state.filterMode = (state.filterMode + 1) % 3;
+            if(state.filterMode===0) filterBtn.innerText = "🚫 原图";
+            else if(state.filterMode===1) filterBtn.innerText = "✨ 质感";
+            else filterBtn.innerText = "🍑 柔光";
+        };
+
+        const pipBtn = document.getElementById('pipBtn');
+        const vPip = document.getElementById('vPip');
+        pipBtn.onclick = async () => {
+            if(document.pictureInPictureElement) document.exitPictureInPicture();
+            else {
+                if(!vPip.srcObject) { vPip.srcObject = pipCanvas.captureStream(30); await vPip.play(); }
+                try { await vPip.requestPictureInPicture(); } catch(e) {}
+            }
+        };
+
+        const recBtn = document.getElementById('recBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const cd = document.getElementById('countdown');
+        recBtn.onclick = () => {
+            let c = 3; cd.innerText = c; cd.classList.remove('hidden');
+            const t = setInterval(() => {
+                c--; if(c>0) cd.innerText = c; else { clearInterval(t); cd.classList.add('hidden'); startRec(); }
+            }, 1000);
+        };
+        function startRec() {
+            chunks = []; const stream = canvas.captureStream(60); const tracks = [];
+            if(document.getElementById('vScreen').srcObject) tracks.push(...document.getElementById('vScreen').srcObject.getAudioTracks());
+            if(document.getElementById('vCam').srcObject) tracks.push(...document.getElementById('vCam').srcObject.getAudioTracks());
+            if(tracks.length) stream.addTrack(tracks[0]);
+            let mime = 'video/webm;codecs=vp9'; if(MediaRecorder.isTypeSupported('video/mp4')) mime = 'video/mp4';
+            recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8000000 });
+            recorder.ondataavailable = e => { if(e.data.size) chunks.push(e.data); };
+            recorder.onstop = () => {
+                const blob = new Blob(chunks, {type: mime}); const url = URL.createObjectURL(blob);
+                const a = document.createElement('a'); a.href = url; a.download = `AutoCine_${Date.now()}.${mime.includes('mp4')?'mp4':'webm'}`; a.click();
+            };
+            recorder.start(); state.recording = true;
+            recBtn.disabled = true; recBtn.innerText = "🎥 录制中..."; stopBtn.disabled = false;
+        }
+        stopBtn.onclick = () => {
+            if(state.recording) { recorder.stop(); state.recording = false; recBtn.disabled = false; recBtn.innerText = "🔴 录制"; stopBtn.disabled = true; }
+        };
+    </script>
+</body>
+</html>

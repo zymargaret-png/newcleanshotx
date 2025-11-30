@@ -2,7 +2,7 @@
   "name": "cleanshotx-free",
   "version": "1.0.0",
   "description": "Static site for cleanshotx-free",
-  "homepage": "https://<USERNAME>.github.io/<REPO>",
+  "homepage": "https://zymargaret-png.github.io/newcleanshotx",
   "private": true,
   "scripts": {
     "dev": "live-server --entry-file=index.html --port=3000",

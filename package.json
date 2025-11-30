@@ -1,0 +1,17 @@
+{
+  "name": "cleanshotx-free",
+  "version": "1.0.0",
+  "description": "Static site for cleanshotx-free",
+  "homepage": "https://<USERNAME>.github.io/<REPO>",
+  "private": true,
+  "scripts": {
+    "dev": "live-server --entry-file=index.html --port=3000",
+    "predeploy": "echo 'Preparing to deploy'",
+    "deploy": "gh-pages -d .",
+    "start": "node server.js"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.3.0",
+    "live-server": "^1.2.1"
+  }
+}

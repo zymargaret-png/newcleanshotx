@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loom Pro Crop (虚拟裁切版)</title>
+    <style>
+        :root {
+            --bg-gradient: radial-gradient(circle at 50% -20%, #1a1a1a, #000000);
+            --glass-bg: rgba(40, 40, 40, 0.8);
+            --accent: #0A84FF; --danger: #FF453A; --text: #FFF;
+        }
+        * { box-sizing: border-box; user-select: none; }
+        body {
+            background: var(--bg-gradient); color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 100vh; margin: 0; overflow: hidden;
+        }
+
+        /* --- 顶部控制栏 --- */
+        .dock {
+            position: absolute; top: 20px; z-index: 100;
+            display: flex; align-items: center; gap: 10px; padding: 8px 16px;
+            background: var(--glass-bg); backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.1); border-radius: 50px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+            transition: transform 0.3s;
+        }
+        
+        .divider { width: 1px; height: 16px; background: rgba(255,255,255,0.2); }
+
+        button, select {
+            background: transparent; border: none; color: #ddd; font-size: 13px;
+            padding: 6px 12px; border-radius: 8px; cursor: pointer; font-weight: 500;
+            display: flex; align-items: center; gap: 5px; transition: 0.2s;
+        }
+        button:hover { background: rgba(255,255,255,0.1); color: #fff; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* 下拉菜单 */
+        .select-wrap { position: relative; }
+        select { appearance: none; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); padding-right: 24px; outline: none;}
+        .arrow { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 10px; pointer-events: none; color: #aaa; }
+
+        .btn-primary { background: var(--accent) !important; color: #fff !important; }
+        .btn-record { background: rgba(255,69,58,0.15) !important; color: var(--danger) !important; }
+        .btn-record:hover { background: var(--danger) !important; color: #fff !important; }
+        
+        /* 状态切换 */
+        .btn-toggle.active { background: #fff !important; color: #000 !important; }
+        body.recording .dock { transform: translateY(-200%); }
+
+        /* --- 画布区域 --- */
+        .viewport {
+            width: 100%; height: 100%;
+            display: flex; align-items: center; justify-content: center;
+            padding: 40px;
+        }
+
+        .canvas-box {
+            position: relative; 
+            /* 限制最大高度，让9:16能完整显示 */
+            max-height: 85vh; max-width: 90vw;
+            background: #000; 
+            border: 2px solid #333; 
+            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            overflow: hidden;
+            cursor: grab; /* 提示可拖拽 */
+            transition: border-color 0.3s;
+        }
+        .canvas-box:active { cursor: grabbing; border-color: var(--accent); }
+        
+        body.recording .canvas-box { border-color: var(--danger); }
+
+        canvas { width: 100%; height: 100%; display: block; }
+
+        /* 提示层 */
+        .tip-layer {
+            position: absolute; inset: 0; pointer-events: none;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+        .grid-lines {
+            position: absolute; inset: 0; opacity: 0; transition: opacity 0.3s;
+            background-image: 
+                linear-gradient(rgba(255,255,255,0.2) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.2) 1px, transparent 1px);
+            background-size: 33.3% 33.3%;
+        }
+        .canvas-box:active .grid-lines { opacity: 1; } /* 拖拽时显示构图辅助线 */
+
+        .drag-tip {
+            margin-top: auto; margin-bottom: 20px;
+            background: rgba(0,0,0,0.6); color: #fff; padding: 6px 12px; border-radius: 20px; font-size: 12px;
+            backdrop-filter: blur(4px); opacity: 0.8;
+        }
+
+        .status-bar { position: fixed; bottom: 15px; font-size: 12px; color: #666; display: flex; gap: 10px;}
+        .badge { padding: 2px 6px; border-radius: 4px; background: #222; border: 1px solid #333; }
+        
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="dock">
+        <button id="initBtn" class="btn-primary">📡 初始化</button>
+        <div class="divider"></div>
+        
+        <div class="select-wrap">
+            <select id="ratioSelect">
+                <option value="1.777">16:9 (电脑宽屏)</option>
+                <option value="0.5625" selected>9:16 (抖音/手机)</option>
+                <option value="0.75">3:4 (小红书)</option>
+                <option value="1">1:1 (方形)</option>
+            </select>
+            <span class="arrow">▼</span>
+        </div>
+
+        <div class="divider"></div>
+        <button id="camToggle" class="btn-toggle active">头像: 开</button>
+        <button id="filterBtn" class="btn-toggle">美颜: 关</button>
+        <div class="divider"></div>
+        <button id="recBtn" class="btn-record" disabled>🔴 开始录制</button>
+        <button id="stopBtn" style="display:none;">⏹ 停止</button>
+    </div>
+
+    <div class="viewport">
+        <div id="canvasContainer" class="canvas-box" style="aspect-ratio: 9/16;">
+            <canvas id="mainCanvas"></canvas>
+            
+            <div class="tip-layer">
+                <div class="grid-lines"></div> <div id="countdown" style="font-size:100px; font-weight:800; display:none;">3</div>
+                <div class="drag-tip">👆 按住画面拖拽以调整录制区域</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="status-bar">
+        <div id="formatTag" class="badge">检测中...</div>
+        <span id="statusText">等待初始化...</span>
+    </div>
+
+    <video id="vScreen" class="hidden" autoplay playsinline muted></video>
+    <video id="vCam" class="hidden" autoplay playsinline muted></video>
+
+    <script>
+        const $ = id => document.getElementById(id);
+        const canvas = $('mainCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // --- 核心状态 ---
+        const state = {
+            ready: false, recording: false,
+            ratio: 0.5625, // 默认 9:16
+            canvasW: 1080, canvasH: 1920, // 输出分辨率
+            
+            // 屏幕裁切参数 (核心)
+            screenOffsetX: 0, 
+            screenOffsetY: 0,
+            
+            // 摄像头参数
+            camEnabled: true, filterMode: 0,
+            camX: 50, camY: 1600, camSize: 300, // 默认放下面
+            camDragging: false,
+            
+            // 拖拽状态
+            isDraggingScreen: false,
+            lastMouseX: 0, lastMouseY: 0,
+
+            audioLevel: 0
+        };
+        
+        let recorder, chunks = [], audioCtx, analyser, dataArray;
+
+        // 1. 格式检测
+        (function checkSupport() {
+            const types = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9'];
+            for(let t of types) {
+                if(MediaRecorder.isTypeSupported(t)) {
+                    state.mimeType = t; 
+                    $('formatTag').innerText = t.includes('mp4') ? "MP4" : "WebM";
+                    return;
+                }
+            }
+            state.mimeType = 'video/webm'; // 保底
+        })();
+
+        // 2. 比例切换逻辑
+        $('ratioSelect').onchange = (e) => {
+            state.ratio = parseFloat(e.target.value);
+            const box = $('canvasContainer');
+            
+            // 设定输出物理分辨率 (保证清晰度)
+            if(state.ratio >= 1) { // 横屏
+                state.canvasW = 1920; state.canvasH = 1920 / state.ratio;
+            } else { // 竖屏
+                state.canvasW = 1080; state.canvasH = 1080 / state.ratio;
+            }
+            
+            // 更新 Canvas
+            canvas.width = state.canvasW;
+            canvas.height = state.canvasH;
+            box.style.aspectRatio = `${state.canvasW}/${state.canvasH}`;
+            
+            // 重置裁切偏移，防止画面跑丢
+            state.screenOffsetX = 0;
+            state.screenOffsetY = 0;
+            
+            // 重置摄像头位置到右下角
+            state.camSize = state.canvasH * 0.18; // 动态大小
+            state.camX = state.canvasW - state.camSize - 50;
+            state.camY = state.canvasH - state.camSize - 50;
+
+            $('statusText').innerText = `输出分辨率: ${Math.round(state.canvasW)}x${Math.round(state.canvasH)}`;
+        };
+        // 触发一次默认 9:16
+        $('ratioSelect').dispatchEvent(new Event('change'));
+
+        // 3. 初始化
+        $('initBtn').onclick = async () => {
+            try {
+                // ⚠️ 重点：请求录制整个屏幕，不要选窗口
+                const sStream = await navigator.mediaDevices.getDisplayMedia({ video: {width:1920, height:1080}, audio: true });
+                $('vScreen').srcObject = sStream;
+                
+                const cStream = await navigator.mediaDevices.getUserMedia({ video: {width:1920, height:1080}, audio: true });
+                $('vCam').srcObject = cStream;
+
+                // 音频
+                audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+                const source = audioCtx.createMediaStreamSource(cStream);
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 32;
+                source.connect(analyser);
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+                state.ready = true;
+                $('initBtn').style.display = 'none';
+                $('recBtn').disabled = false;
+                $('statusText').innerText = "请选择【整个屏幕】以获得最佳裁切效果";
+                
+                loop();
+            } catch(e) { alert(e.message); }
+        };
+
+        // 4. 渲染循环 (核心裁切逻辑)
+        function loop() {
+            requestAnimationFrame(loop);
+            if(!state.ready) return;
+
+            if(analyser) { analyser.getByteFrequencyData(dataArray); state.audioLevel = dataArray.reduce((a,b)=>a+b,0)/dataArray.length; }
+
+            const W = state.canvasW;
+            const H = state.canvasH;
+            ctx.clearRect(0,0,W,H);
+            ctx.fillStyle = "#000"; ctx.fillRect(0,0,W,H);
+
+            const vScreen = $('vScreen');
+            
+            // --- A. 绘制屏幕 (Pan & Scan) ---
+            if(vScreen.readyState === 4) {
+                const vw = vScreen.videoWidth;
+                const vh = vScreen.videoHeight;
+                
+                // 策略：Cover (等比放大填满)
+                // 计算此时应该缩放多少倍才能填满画布
+                const scale = Math.max(W / vw, H / vh);
+                
+                const drawW = vw * scale;
+                const drawH = vh * scale;
+                
+                // 默认居中 + 加上用户的偏移量
+                // 限制拖拽范围：不要把画面拖出黑边
+                const minX = W - drawW; 
+                const minY = H - drawH;
+                
+                // 居中基础坐标
+                let x = (W - drawW) / 2 + state.screenOffsetX;
+                let y = (H - drawH) / 2 + state.screenOffsetY;
+                
+                // 边界限制 (Clamp)
+                if(drawW > W) x = Math.max(minX, Math.min(0, x));
+                if(drawH > H) y = Math.max(minY, Math.min(0, y));
+                
+                // 更新回 state，保证手感
+                // 注意：这里为了拖拽逻辑简单，先不回写state，仅渲染限制
+                
+                ctx.drawImage(vScreen, x, y, drawW, drawH);
+            }
+
+            // --- B. 绘制摄像头 ---
+            if(state.camEnabled && $('vCam').readyState === 4) {
+                drawCam(ctx);
+            }
+        }
+
+        function drawCam(ctx) {
+            const { camX, camY, camSize, audioLevel, filterMode } = state;
+            const r = camSize / 2;
+            const cx = camX + r;
+            const cy = camY + r;
+
+            ctx.save();
+            // 光圈
+            const vol = audioLevel / 40;
+            if(vol > 0.1) {
+                ctx.beginPath(); ctx.arc(cx, cy, r + vol*15, 0, Math.PI*2);
+                ctx.fillStyle = `rgba(10, 132, 255, ${0.2+vol*0.2})`; ctx.fill();
+            }
+            // 剪切
+            ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+            ctx.shadowColor = "rgba(0,0,0,0.5)"; ctx.shadowBlur = 20; ctx.shadowOffsetY = 5;
+            ctx.clip();
+
+            // 滤镜
+            if(filterMode === 1) ctx.filter = 'contrast(1.1) saturate(1.1)';
+            
+            const vCam = $('vCam');
+            const min = Math.min(vCam.videoWidth, vCam.videoHeight);
+            ctx.drawImage(vCam, (vCam.videoWidth-min)/2, (vCam.videoHeight-min)/2, min, min, camX, camY, camSize, camSize);
+            
+            ctx.filter = 'none';
+            ctx.strokeStyle = "#fff"; ctx.lineWidth = camSize*0.03; ctx.stroke();
+            ctx.restore();
+        }
+
+        // 5. 交互：拖拽屏幕 & 摄像头
+        const box = $('canvasContainer');
+        
+        box.onmousedown = (e) => {
+            const rect = box.getBoundingClientRect();
+            // 坐标转换：DOM坐标 -> 画布坐标
+            const scaleX = state.canvasW / rect.width;
+            const scaleY = state.canvasH / rect.height;
+            const mx = (e.clientX - rect.left) * scaleX;
+            const my = (e.clientY - rect.top) * scaleY;
+
+            // 检测是否点中摄像头
+            const cx = state.camX + state.camSize/2;
+            const cy = state.camY + state.camSize/2;
+            if(state.camEnabled && Math.hypot(mx-cx, my-cy) < state.camSize/2) {
+                state.camDragging = true;
+            } else {
+                // 没点中摄像头，那就是拖拽背景屏幕
+                state.isDraggingScreen = true;
+            }
+            state.lastMouseX = e.clientX;
+            state.lastMouseY = e.clientY;
+        };
+
+        window.onmousemove = (e) => {
+            if(!state.camDragging && !state.isDraggingScreen) return;
+
+            const rect = box.getBoundingClientRect();
+            const scaleX = state.canvasW / rect.width; // 物理像素/CSS像素
+            const scaleY = state.canvasH / rect.height;
+            
+            const dx = (e.clientX - state.lastMouseX) * scaleX;
+            const dy = (e.clientY - state.lastMouseY) * scaleY;
+
+            if(state.camDragging) {
+                state.camX += dx; state.camY += dy;
+            } else if (state.isDraggingScreen) {
+                state.screenOffsetX += dx;
+                state.screenOffsetY += dy;
+            }
+
+            state.lastMouseX = e.clientX;
+            state.lastMouseY = e.clientY;
+        };
+
+        window.onmouseup = () => {
+            state.camDragging = false;
+            state.isDraggingScreen = false;
+        };
+
+        // 6. 录制逻辑 (保持不变)
+        $('recBtn').onclick = () => {
+            $('dock').style.display = 'none'; // 隐藏菜单
+            let c = 3; $('countdown').innerText = c; $('countdown').style.display = 'block';
+            const t = setInterval(()=> {
+                c--; if(c>0) $('countdown').innerText = c;
+                else { clearInterval(t); $('countdown').style.display = 'none'; startRec(); }
+            }, 1000);
+        };
+        
+        function startRec() {
+            chunks = [];
+            const stream = canvas.captureStream(30); // 30FPS
+            // 合并音频
+            const tracks = [];
+            if($('vScreen').srcObject) tracks.push(...$('vScreen').srcObject.getAudioTracks());
+            if($('vCam').srcObject) tracks.push(...$('vCam').srcObject.getAudioTracks());
+            if(tracks.length) stream.addTrack(tracks[0]);
+            
+            recorder = new MediaRecorder(stream, {mimeType: state.mimeType, videoBitsPerSecond: 5000000});
+            recorder.ondataavailable = e => { if(e.data.size) chunks.push(e.data); };
+            recorder.onstop = () => {
+                const blob = new Blob(chunks, {type: state.mimeType});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `Crop_${state.canvasW}x${state.canvasH}_${Date.now()}.mp4`;
+                a.click();
+                document.body.classList.remove('recording');
+            };
+            recorder.start();
+            document.body.classList.add('recording');
+            $('recBtn').style.display = 'none';
+            $('stopBtn').style.display = 'flex';
+        }
+        
+        $('stopBtn').onclick = () => {
+            recorder.stop();
+            $('recBtn').style.display = 'flex';
+            $('stopBtn').style.display = 'none';
+        };
+
+        // 功能开关
+        $('camToggle').onclick = (e) => {
+            state.camEnabled = !state.camEnabled;
+            e.target.innerText = state.camEnabled ? "头像: 开" : "头像: 关";
+            e.target.classList.toggle('active');
+        };
+        $('filterBtn').onclick = (e) => {
+            state.filterMode = state.filterMode ? 0 : 1;
+            e.target.innerText = state.filterMode ? "美颜: 开" : "美颜: 关";
+            e.target.classList.toggle('active');
+        };
+        
+        // 别名适配
+        if(!document.getElementById('dock')) document.querySelector('.dock').id = 'dock';
+
+    </script>
+</body>
+</html>
